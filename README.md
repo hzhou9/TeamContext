@@ -1,6 +1,7 @@
 # TeamContext
 
 TeamContext is a Git-native context collaboration CLI for vibe coding teams.
+> TeamContext is using itself for context collaboration.
 
 ## Why This Exists
 
