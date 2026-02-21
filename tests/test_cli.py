@@ -30,6 +30,12 @@ class TeamContextCliTests(unittest.TestCase):
         self.assertTrue((self.root / ".tc" / "lock.json").exists())
         self.assertTrue((self.root / ".tc" / "agent" / "bootstrap_prompt.md").exists())
         self.assertTrue((self.root / ".tc" / "agent" / "workflow.md").exists())
+        intents_path = self.root / ".tc" / "agent" / "intents.json"
+        self.assertTrue(intents_path.exists())
+        intents = json.loads(intents_path.read_text(encoding="utf-8"))
+        self.assertEqual(intents["default_mode"], "execute")
+        self.assertTrue(any(r["intent"] == "save recent context to tc" for r in intents["rules"]))
+        self.assertTrue(any(r["intent"] == "sync latest context" for r in intents["rules"]))
         self.assertTrue((self.root / ".viking" / "agfs" / "shared" / "changelog").exists())
         self.assertTrue((self.root / ".gitignore").exists())
 

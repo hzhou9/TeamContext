@@ -16,7 +16,7 @@ import yaml
 
 from teamcontext.engine import OpenVikingEngine
 
-DEFAULT_VENDOR_REPO = "https://github.com/openviking/openviking.git"
+DEFAULT_VENDOR_REPO = "https://github.com/volcengine/OpenViking.git"
 DEFAULT_VENDOR_REF = "main"
 
 
@@ -255,7 +255,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     updated_ignore, added = _merge_gitignore(root)
     clone_ok, clone_msg = _maybe_clone_vendor(paths, lock)
-    bootstrap_path, workflow_path = _write_agent_files(paths)
+    bootstrap_path, workflow_path, intents_path = _write_agent_files(paths)
 
     print(f"Initialized TeamContext in {root}")
     print(f"- config: {paths.config_path}")
@@ -263,6 +263,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"- vendor: {clone_msg}")
     print(f"- agent bootstrap: {bootstrap_path}")
     print(f"- agent workflow: {workflow_path}")
+    print(f"- agent intents: {intents_path}")
     if updated_ignore:
         print(f"- .gitignore updated with: {', '.join(added)}")
     if not clone_ok:
@@ -357,11 +358,12 @@ def _bootstrap_prompt(paths: TcPaths) -> str:
     )
 
 
-def _write_agent_files(paths: TcPaths) -> tuple[Path, Path]:
+def _write_agent_files(paths: TcPaths) -> tuple[Path, Path, Path]:
     agent_dir = paths.tc_dir / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     bootstrap_path = agent_dir / "bootstrap_prompt.md"
     workflow_path = agent_dir / "workflow.md"
+    intents_path = agent_dir / "intents.json"
     bootstrap_path.write_text(_bootstrap_prompt(paths) + "\n", encoding="utf-8")
     workflow_path.write_text(
         "\n".join(
@@ -376,13 +378,37 @@ def _write_agent_files(paths: TcPaths) -> tuple[Path, Path]:
                 '- User says: "sync latest context"',
                 "- Run: `tc sync --json`",
                 "",
+                "Execution rule:",
+                "- Execute mapped commands immediately; do not only print command text.",
+                "- Only return command text without execution if user explicitly asks for command-only output.",
+                "",
+                "Post-execution response contract:",
+                "- Include command, exit code, and key results from stdout.",
                 "Then summarize key deltas from JSON output for the user.",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    return bootstrap_path, workflow_path
+    intents_payload = {
+        "version": 1,
+        "default_mode": "execute",
+        "rules": [
+            {
+                "intent": "save recent context to tc",
+                "command": ["tc", "save"],
+                "execute_immediately": True,
+            },
+            {
+                "intent": "sync latest context",
+                "command": ["tc", "sync", "--json"],
+                "execute_immediately": True,
+            },
+        ],
+        "command_only_opt_out": "Only skip execution when user explicitly asks for command-only output.",
+    }
+    intents_path.write_text(json.dumps(intents_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return bootstrap_path, workflow_path, intents_path
 
 
 def _tracked_workspace_files(root: Path) -> dict[str, dict[str, int]]:

@@ -29,6 +29,13 @@ With TeamContext, teams can keep a consistent project memory across people, bran
 - Keeping context synchronized between Codex/Claude sessions across the team
 - Reducing regressions caused by missing architectural constraints
 
+## Engine
+
+TeamContext uses OpenViking as its context engine:
+- OpenViking repo: https://github.com/volcengine/OpenViking
+- TeamContext vendors and pins OpenViking under `.tc/vendor/openviking`
+- OpenViking powers indexing/integration while TeamContext manages the Git-native workflow and shared file layout
+
 ## Using With Codex/Claude
 
 TeamContext is designed to be called directly by vibe coding agents.
@@ -62,9 +69,11 @@ TeamContext (this repo) is a CLI tool. Your application repo (for example `proje
 After `tc init`, TeamContext creates:
 - `.tc/agent/bootstrap_prompt.md`
 - `.tc/agent/workflow.md`
+- `.tc/agent/intents.json`
 
 These files tell your coding tool how to map user intents to TeamContext commands.
 After init, the default operating mode is Agent mode (tool runs `tc` commands). Use manual commands only as fallback.
+Execution rule: when an intent matches, execute the mapped `tc` command immediately (do not only print command text).
 
 ### Scenario 1: Founder sets up TeamContext in an existing project
 
