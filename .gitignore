@@ -1,0 +1,4 @@
+.tc/vendor/
+.tc/state/
+.viking/index/
+.viking/agfs/sessions/

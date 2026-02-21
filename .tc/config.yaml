@@ -1,0 +1,11 @@
+project_root: /Users/joe/Documents/TeamContext
+paths:
+  shared: .viking/agfs/shared
+  sessions: .viking/agfs/sessions
+  index: .viking/index
+security:
+  secret_scan: true
+  block_on_findings: true
+engine:
+  name: openviking
+  vendor_path: .tc/vendor/openviking
