@@ -2,3 +2,5 @@
 .tc/state/
 .viking/index/
 .viking/agfs/sessions/
+
+.DS_Store
