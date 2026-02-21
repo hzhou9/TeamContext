@@ -1,9 +1,9 @@
 {
-  "created_at": "2026-02-21T02:18:00Z",
+  "created_at": "2026-02-21T06:06:35Z",
   "openviking": {
     "ref": "main",
-    "repo": "https://github.com/openviking/openviking.git",
-    "resolved_commit": null
+    "repo": "https://github.com/volcengine/OpenViking.git",
+    "resolved_commit": "5bb7709bef95f25114231e3580a7bd39bddee86c"
   },
   "version": 1
 }
