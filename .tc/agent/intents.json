@@ -1,0 +1,25 @@
+{
+  "command_only_opt_out": "Only skip execution when user explicitly asks for command-only output.",
+  "default_mode": "execute",
+  "rules": [
+    {
+      "command": [
+        "tc",
+        "save",
+        "--auto-bootstrap-if-empty"
+      ],
+      "execute_immediately": true,
+      "intent": "save recent context to tc"
+    },
+    {
+      "command": [
+        "tc",
+        "sync",
+        "--json"
+      ],
+      "execute_immediately": true,
+      "intent": "sync latest context"
+    }
+  ],
+  "version": 1
+}

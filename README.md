@@ -74,6 +74,11 @@ After `tc init`, TeamContext creates:
 These files tell your coding tool how to map user intents to TeamContext commands.
 After init, the default operating mode is Agent mode (tool runs `tc` commands). Use manual commands only as fallback.
 Execution rule: when an intent matches, execute the mapped `tc` command immediately (do not only print command text).
+For strict execution without tool-side rewriting, you can run intents via:
+```bash
+tc agent run "sync latest context"
+tc agent run "save recent context to tc"
+```
 
 ### Scenario 1: Founder sets up TeamContext in an existing project
 
@@ -81,6 +86,7 @@ Execution rule: when an intent matches, execute the mapped `tc` command immediat
    ```bash
    tc init
    ```
+   `tc init` now runs an initial sync by default (equivalent to `tc sync --json`) and writes the latest sync snapshot into `.tc/agent/bootstrap_prompt.md`.
 2. Open your coding tool and paste this file as the first system/session instruction:
    ```bash
    .tc/agent/bootstrap_prompt.md
@@ -88,12 +94,20 @@ Execution rule: when an intent matches, execute the mapped `tc` command immediat
 3. Save initial context through TeamContext:
    - Agent mode: tell your tool:
    ```bash
-   save recent context to tc
+   save initial context to tc
    ```
-   (tool should run `tc save`)
+   (tool should run `tc agent run "save recent context to tc"`)
    - Manual fallback:
    ```bash
    tc save
+   ```
+   - For an existing project with prior progress, run a one-time baseline capture:
+   ```bash
+   tc save --bootstrap
+   ```
+   If baseline capture is very large, TeamContext blocks it by default. To proceed intentionally:
+   ```bash
+   tc save --bootstrap --force-large-save
    ```
 4. Commit and push to your Git remote:
    ```bash
@@ -121,7 +135,7 @@ Execution rule: when an intent matches, execute the mapped `tc` command immediat
    ```bash
    sync latest context
    ```
-   (tool should run `tc sync --json`)
+   (tool should run `tc agent run "sync latest context"`)
    - Manual fallback (only if needed):
    ```bash
    tc sync --json
@@ -137,7 +151,7 @@ Execution rule: when an intent matches, execute the mapped `tc` command immediat
    ```bash
    save recent context to tc
    ```
-   (tool should run `tc save`)
+   (tool should run `tc agent run "save recent context to tc"`)
    - Manual fallback (only if needed):
    ```bash
    tc save
@@ -156,6 +170,7 @@ Execution rule: when an intent matches, execute the mapped `tc` command immediat
    ```bash
    sync latest context
    ```
+   (tool should run `tc agent run "sync latest context"`)
    - Manual fallback (only if needed):
    ```bash
    tc sync --json
@@ -193,6 +208,11 @@ tc vendor upgrade --ref v0.2.0
 ```
 
 `tc sync` also prints a bootstrap prompt in human mode, and `tc sync --json` returns structured data for agent mode.
+`tc sync` also writes machine-readable output to `.tc/state/last_sync.json` every time (with or without `--json`).
+
+First-run note:
+- In a brand-new project, `decisions/`, `patterns/`, and `runbooks/` may be empty. This is expected.
+- In that case, the tool should report "no approved team context yet" and continue with repository code context.
 
 ## Run Tests
 

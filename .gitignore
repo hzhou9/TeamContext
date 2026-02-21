@@ -4,3 +4,7 @@
 .viking/agfs/sessions/
 
 .DS_Store
+
+__pycache__/
+*.py[cod]
+src/teamcontext.egg-info/

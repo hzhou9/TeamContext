@@ -28,14 +28,25 @@ class TeamContextCliTests(unittest.TestCase):
 
         self.assertTrue((self.root / ".tc" / "config.yaml").exists())
         self.assertTrue((self.root / ".tc" / "lock.json").exists())
-        self.assertTrue((self.root / ".tc" / "agent" / "bootstrap_prompt.md").exists())
+        bootstrap_path = self.root / ".tc" / "agent" / "bootstrap_prompt.md"
+        self.assertTrue(bootstrap_path.exists())
+        bootstrap_text = bootstrap_path.read_text(encoding="utf-8")
+        self.assertIn("If index.txt is missing, run `tc sync` first.", bootstrap_text)
+        self.assertIn('report "no approved team context yet"', bootstrap_text)
         self.assertTrue((self.root / ".tc" / "agent" / "workflow.md").exists())
         intents_path = self.root / ".tc" / "agent" / "intents.json"
         self.assertTrue(intents_path.exists())
         intents = json.loads(intents_path.read_text(encoding="utf-8"))
         self.assertEqual(intents["default_mode"], "execute")
-        self.assertTrue(any(r["intent"] == "save recent context to tc" for r in intents["rules"]))
+        self.assertTrue(
+            any(
+                r["intent"] == "save recent context to tc"
+                and r["command"] == ["tc", "save", "--auto-bootstrap-if-empty"]
+                for r in intents["rules"]
+            )
+        )
         self.assertTrue(any(r["intent"] == "sync latest context" for r in intents["rules"]))
+        self.assertTrue((self.root / ".viking" / "index" / "index.txt").exists())
         self.assertTrue((self.root / ".viking" / "agfs" / "shared" / "changelog").exists())
         self.assertTrue((self.root / ".gitignore").exists())
 
@@ -50,14 +61,29 @@ class TeamContextCliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
         state_path = self.root / ".tc" / "state" / "sync_state.json"
+        last_sync_path = self.root / ".tc" / "state" / "last_sync.json"
         index_path = self.root / ".viking" / "index" / "index.txt"
         self.assertTrue(state_path.exists())
+        self.assertTrue(last_sync_path.exists())
         self.assertTrue(index_path.exists())
 
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertIn(".viking/agfs/shared/decisions/d1.md", state["files"])
         index_text = index_path.read_text(encoding="utf-8")
         self.assertIn("engine_imported=", index_text)
+
+    def test_agent_run_sync_intent_executes_mapped_command(self) -> None:
+        with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
+            cli.main(["--project-root", str(self.root), "init"])
+        (self.root / ".viking" / "agfs" / "shared" / "decisions" / "d1.md").write_text("# d1\n", encoding="utf-8")
+
+        out = StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(["--project-root", str(self.root), "agent", "run", "sync", "latest", "context"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["shared_files_scanned"], 1)
 
     def test_sync_json_outputs_machine_readable_payload(self) -> None:
         with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
@@ -197,6 +223,66 @@ class TeamContextCliTests(unittest.TestCase):
         self.assertTrue(changelog_files)
         self.assertTrue(candidate_files)
         self.assertTrue((self.root / ".tc" / "state" / "save_state.json").exists())
+
+    def test_save_after_init_without_changes_is_noop(self) -> None:
+        with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
+            cli.main(["--project-root", str(self.root), "init"])
+        out = StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(["--project-root", str(self.root), "save"])
+        self.assertEqual(rc, 0)
+        self.assertIn("No new workspace changes since last save.", out.getvalue())
+
+    def test_save_bootstrap_captures_baseline_after_init(self) -> None:
+        with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
+            cli.main(["--project-root", str(self.root), "init"])
+        (self.root / "README.md").write_text("existing project baseline\n", encoding="utf-8")
+        rc = cli.main(["--project-root", str(self.root), "save", "--bootstrap"])
+        self.assertEqual(rc, 0)
+        changelog_files = list((self.root / ".viking" / "agfs" / "shared" / "changelog").glob("*.md"))
+        candidate_files = list((self.root / ".viking" / "agfs" / "shared" / "candidates").glob("*.md"))
+        self.assertTrue(changelog_files)
+        self.assertTrue(candidate_files)
+
+    def test_save_bootstrap_blocks_when_over_threshold(self) -> None:
+        with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
+            cli.main(["--project-root", str(self.root), "init"])
+        (self.root / "README.md").write_text("existing project baseline\n", encoding="utf-8")
+        out = StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(
+                ["--project-root", str(self.root), "save", "--bootstrap", "--large-save-threshold", "0"]
+            )
+        self.assertEqual(rc, 3)
+        self.assertIn("Bootstrap save blocked", out.getvalue())
+
+    def test_save_bootstrap_force_large_save_allows_when_over_threshold(self) -> None:
+        with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
+            cli.main(["--project-root", str(self.root), "init"])
+        (self.root / "README.md").write_text("existing project baseline\n", encoding="utf-8")
+        rc = cli.main(
+            [
+                "--project-root",
+                str(self.root),
+                "save",
+                "--bootstrap",
+                "--large-save-threshold",
+                "0",
+                "--force-large-save",
+            ]
+        )
+        self.assertEqual(rc, 0)
+
+    def test_save_auto_bootstrap_if_empty_creates_baseline_when_no_shared_history(self) -> None:
+        with mock.patch.object(cli, "_maybe_clone_vendor", return_value=(False, "skipped")):
+            cli.main(["--project-root", str(self.root), "init"])
+        (self.root / "README.md").write_text("existing project baseline\n", encoding="utf-8")
+        rc = cli.main(["--project-root", str(self.root), "save", "--auto-bootstrap-if-empty"])
+        self.assertEqual(rc, 0)
+        changelog_files = list((self.root / ".viking" / "agfs" / "shared" / "changelog").glob("*.md"))
+        candidate_files = list((self.root / ".viking" / "agfs" / "shared" / "candidates").glob("*.md"))
+        self.assertTrue(changelog_files)
+        self.assertTrue(candidate_files)
 
 
 if __name__ == "__main__":

@@ -255,7 +255,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     updated_ignore, added = _merge_gitignore(root)
     clone_ok, clone_msg = _maybe_clone_vendor(paths, lock)
-    bootstrap_path, workflow_path, intents_path = _write_agent_files(paths)
+    init_sync_payload = _run_sync(paths, root)
+    _write_save_state(paths, _tracked_workspace_files(root))
+    bootstrap_path, workflow_path, intents_path = _write_agent_files(paths, init_sync_payload)
 
     print(f"Initialized TeamContext in {root}")
     print(f"- config: {paths.config_path}")
@@ -264,6 +266,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"- agent bootstrap: {bootstrap_path}")
     print(f"- agent workflow: {workflow_path}")
     print(f"- agent intents: {intents_path}")
+    print(
+        "- initial sync: "
+        f"scanned={init_sync_payload['shared_files_scanned']}, "
+        f"changed={init_sync_payload['changed_files']}, "
+        f"removed={init_sync_payload['removed_files']}"
+    )
     if updated_ignore:
         print(f"- .gitignore updated with: {', '.join(added)}")
     if not clone_ok:
@@ -333,6 +341,11 @@ def _category_counts(paths: TcPaths) -> dict[str, int]:
     return counts
 
 
+def _has_shared_history(paths: TcPaths) -> bool:
+    counts = _category_counts(paths)
+    return (counts.get("changelog", 0) + counts.get("candidates", 0)) > 0
+
+
 def _sync_snapshot(paths: TcPaths) -> tuple[str | None, int]:
     state_path = _index_state_path(paths)
     if not state_path.exists():
@@ -344,27 +357,40 @@ def _sync_snapshot(paths: TcPaths) -> tuple[str | None, int]:
     return updated_at if isinstance(updated_at, str) else None, file_count
 
 
-def _bootstrap_prompt(paths: TcPaths) -> str:
-    return (
+def _bootstrap_prompt(paths: TcPaths, sync_payload: dict[str, Any] | None = None) -> str:
+    lines = [
         "Read the following TeamContext sources before coding:\n"
-        f"- {paths.shared_dir / 'decisions'}\n"
-        f"- {paths.shared_dir / 'patterns'}\n"
-        f"- {paths.shared_dir / 'runbooks'}\n"
-        f"- {paths.index_dir / 'index.txt'}\n"
-        "Then do this before writing code:\n"
-        "- Summarize the constraints and decisions you will follow.\n"
-        "- List exactly which files you read.\n"
-        "- If context is missing or conflicting, ask clarifying questions first."
+    ]
+    lines.append(f"- {paths.shared_dir / 'decisions'}\n")
+    lines.append(f"- {paths.shared_dir / 'patterns'}\n")
+    lines.append(f"- {paths.shared_dir / 'runbooks'}\n")
+    lines.append(f"- {paths.index_dir / 'index.txt'}\n")
+    if sync_payload:
+        lines.append("Latest sync snapshot:\n")
+        lines.append(
+            f"- shared_files_scanned={sync_payload.get('shared_files_scanned', 0)} | "
+            f"changed_files={sync_payload.get('changed_files', 0)} | "
+            f"removed_files={sync_payload.get('removed_files', 0)}\n"
+        )
+    lines.append("If index.txt is missing, run `tc sync` first.\n")
+    lines.append(
+        'If decisions/patterns/runbooks are empty, report "no approved team context yet" '
+        "and continue with code-level context.\n"
     )
+    lines.append("Then do this before writing code:\n")
+    lines.append("- Summarize the constraints and decisions you will follow.\n")
+    lines.append("- List exactly which files you read.\n")
+    lines.append("- If context is missing or conflicting, ask clarifying questions first.")
+    return "".join(lines)
 
 
-def _write_agent_files(paths: TcPaths) -> tuple[Path, Path, Path]:
+def _write_agent_files(paths: TcPaths, sync_payload: dict[str, Any] | None = None) -> tuple[Path, Path, Path]:
     agent_dir = paths.tc_dir / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     bootstrap_path = agent_dir / "bootstrap_prompt.md"
     workflow_path = agent_dir / "workflow.md"
     intents_path = agent_dir / "intents.json"
-    bootstrap_path.write_text(_bootstrap_prompt(paths) + "\n", encoding="utf-8")
+    bootstrap_path.write_text(_bootstrap_prompt(paths, sync_payload) + "\n", encoding="utf-8")
     workflow_path.write_text(
         "\n".join(
             [
@@ -373,7 +399,7 @@ def _write_agent_files(paths: TcPaths) -> tuple[Path, Path, Path]:
                 "Use these intent->command mappings in vibe coding sessions:",
                 "",
                 '- User says: "save recent context to tc"',
-                "- Run: `tc save`",
+                "- Run: `tc save --auto-bootstrap-if-empty`",
                 "",
                 '- User says: "sync latest context"',
                 "- Run: `tc sync --json`",
@@ -396,7 +422,7 @@ def _write_agent_files(paths: TcPaths) -> tuple[Path, Path, Path]:
         "rules": [
             {
                 "intent": "save recent context to tc",
-                "command": ["tc", "save"],
+                "command": ["tc", "save", "--auto-bootstrap-if-empty"],
                 "execute_immediately": True,
             },
             {
@@ -409,6 +435,67 @@ def _write_agent_files(paths: TcPaths) -> tuple[Path, Path, Path]:
     }
     intents_path.write_text(json.dumps(intents_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return bootstrap_path, workflow_path, intents_path
+
+
+def _run_sync(paths: TcPaths, root: Path) -> dict[str, Any]:
+    shared_files = _collect_shared_files(paths.shared_dir)
+    before = _load_sync_state(paths)
+    after: dict[str, float] = {}
+    changed = 0
+    changed_paths: list[str] = []
+
+    for p in shared_files:
+        rel = str(p.relative_to(root))
+        mtime = p.stat().st_mtime
+        after[rel] = mtime
+        if rel not in before or before[rel] != mtime:
+            changed += 1
+            changed_paths.append(rel)
+
+    removed_paths = sorted(set(before) - set(after))
+    removed = len(removed_paths)
+    _write_sync_state(paths, after)
+    engine = OpenVikingEngine(paths.vendor_openviking)
+    engine_result = engine.index_shared_docs(shared_files, root, paths.index_dir / "index.txt")
+
+    summary_path = paths.state_dir / "sync_summary.txt"
+    summary_path.write_text(
+        "\n".join(
+            [
+                f"time: {datetime.utcnow().isoformat(timespec='seconds')}Z",
+                f"shared_files: {len(shared_files)}",
+                f"changed_files: {changed}",
+                f"removed_files: {removed}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "ok": True,
+        "shared_files_scanned": len(shared_files),
+        "changed_files": changed,
+        "removed_files": removed,
+        "changed_paths": changed_paths,
+        "removed_paths": removed_paths,
+        "index_file": str(paths.index_dir / "index.txt"),
+        "engine_message": engine_result.message,
+    }
+    payload["bootstrap_prompt"] = _bootstrap_prompt(paths, payload)
+    (paths.state_dir / "last_sync.json").write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                **payload,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return payload
 
 
 def _tracked_workspace_files(root: Path) -> dict[str, dict[str, int]]:
@@ -443,6 +530,8 @@ def _tracked_workspace_files(root: Path) -> dict[str, dict[str, int]]:
 
     files: dict[str, dict[str, int]] = {}
     for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
         if not path.is_file():
             continue
         rel = path.relative_to(root)
@@ -491,51 +580,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     paths = TcPaths.for_root(root)
     _ensure_base_dirs(paths)
 
-    shared_files = _collect_shared_files(paths.shared_dir)
-    before = _load_sync_state(paths)
-    after: dict[str, float] = {}
-    changed = 0
-    changed_paths: list[str] = []
-
-    for p in shared_files:
-        rel = str(p.relative_to(root))
-        mtime = p.stat().st_mtime
-        after[rel] = mtime
-        if rel not in before or before[rel] != mtime:
-            changed += 1
-            changed_paths.append(rel)
-
-    removed_paths = sorted(set(before) - set(after))
-    removed = len(removed_paths)
-    _write_sync_state(paths, after)
-    engine = OpenVikingEngine(paths.vendor_openviking)
-    engine_result = engine.index_shared_docs(shared_files, root, paths.index_dir / "index.txt")
-
-    summary_path = paths.state_dir / "sync_summary.txt"
-    summary_path.write_text(
-        "\n".join(
-            [
-                f"time: {datetime.utcnow().isoformat(timespec='seconds')}Z",
-                f"shared_files: {len(shared_files)}",
-                f"changed_files: {changed}",
-                f"removed_files: {removed}",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    payload = {
-        "ok": True,
-        "shared_files_scanned": len(shared_files),
-        "changed_files": changed,
-        "removed_files": removed,
-        "changed_paths": changed_paths,
-        "removed_paths": removed_paths,
-        "index_file": str(paths.index_dir / "index.txt"),
-        "engine_message": engine_result.message,
-        "bootstrap_prompt": _bootstrap_prompt(paths),
-    }
+    payload = _run_sync(paths, root)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -671,13 +716,31 @@ def cmd_save(args: argparse.Namespace) -> int:
     secret_scan_enabled = bool(security_cfg.get("secret_scan", True))
     block_on_findings = bool(security_cfg.get("block_on_findings", True))
 
-    before = _load_save_state(paths)
+    auto_bootstrap = False
+    before = {} if args.bootstrap else _load_save_state(paths)
     after = _tracked_workspace_files(root)
     added, modified, deleted = _workspace_diff(before, after)
     changed = added + modified + deleted
     if not changed:
-        print("No new workspace changes since last save.")
-        return 0
+        if args.auto_bootstrap_if_empty and not _has_shared_history(paths):
+            auto_bootstrap = True
+            added, modified, deleted = _workspace_diff({}, after)
+            changed = added + modified + deleted
+        else:
+            print("No new workspace changes since last save.")
+            if not _has_shared_history(paths):
+                print("Hint: if this is first-time capture for an existing project, run:")
+                print("`tc save --bootstrap`")
+            return 0
+
+    effective_bootstrap = args.bootstrap or auto_bootstrap
+    if effective_bootstrap and len(changed) > args.large_save_threshold and not args.force_large_save:
+        print("Bootstrap save blocked: change set exceeds safety threshold.")
+        print(f"- changed files: {len(changed)}")
+        print(f"- threshold: {args.large_save_threshold}")
+        print("If this is intentional, re-run with:")
+        print("`tc save --bootstrap --force-large-save`")
+        return 3
 
     user = _slugify(args.user or getpass.getuser())
     topic = args.topic.strip() if args.topic else _auto_topic_from_changes(changed)
@@ -699,6 +762,12 @@ def cmd_save(args: argparse.Namespace) -> int:
 
     _write_save_state(paths, after)
     print("Auto context save complete")
+    if args.bootstrap:
+        print("- mode: bootstrap (captured baseline context)")
+    elif auto_bootstrap:
+        print("- mode: auto-bootstrap (captured baseline context)")
+    else:
+        print("- mode: incremental")
     print(f"- topic: {topic}")
     print(f"- changed files: {len(changed)}")
     print(f"- changelog: {changelog_path}")
@@ -788,6 +857,45 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent_run(args: argparse.Namespace) -> int:
+    root = _resolve_root(_project_root_from_args(args))
+    paths = TcPaths.for_root(root)
+    _ensure_base_dirs(paths)
+
+    intent = " ".join(args.intent).strip()
+    intents_path = paths.tc_dir / "agent" / "intents.json"
+    if not intents_path.exists():
+        print(f"error: missing intents file: {intents_path}", file=sys.stderr)
+        return 2
+
+    payload = json.loads(intents_path.read_text(encoding="utf-8"))
+    rules = payload.get("rules", [])
+    if not isinstance(rules, list):
+        print("error: invalid intents.json format", file=sys.stderr)
+        return 2
+
+    match = None
+    for rule in rules:
+        if isinstance(rule, dict) and rule.get("intent") == intent:
+            match = rule
+            break
+    if not match:
+        print(f"error: no mapped command for intent: {intent}", file=sys.stderr)
+        return 2
+
+    command = match.get("command")
+    if not isinstance(command, list) or not command:
+        print("error: invalid mapped command in intents.json", file=sys.stderr)
+        return 2
+
+    if command[0] != "tc":
+        print(f"error: unsupported mapped executable: {command[0]}", file=sys.stderr)
+        return 2
+
+    # Execute mapped command exactly, preserving output format.
+    return main(["--project-root", str(root), *command[1:]])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tc", description="TeamContext CLI")
     parser.add_argument("--project-root", help="Project root (default: current directory)")
@@ -810,6 +918,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_save.add_argument("--topic", help="Optional topic override")
     p_save.add_argument("--summary", help="Optional summary override")
     p_save.add_argument("--user", help="Override author id")
+    p_save.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="Capture baseline context from the whole current workspace (recommended once for existing projects)",
+    )
+    p_save.add_argument(
+        "--auto-bootstrap-if-empty",
+        action="store_true",
+        help="If incremental save finds no changes and no shared history exists, auto-run baseline capture",
+    )
+    p_save.add_argument(
+        "--large-save-threshold",
+        type=int,
+        default=1000,
+        help="Safety threshold for file-count in bootstrap mode (default: 1000)",
+    )
+    p_save.add_argument(
+        "--force-large-save",
+        action="store_true",
+        help="Allow bootstrap save even when it exceeds the safety threshold",
+    )
     p_save.add_argument("--allow-findings", action="store_true", help="Allow secret scan findings")
     p_save.set_defaults(func=cmd_save)
 
@@ -830,6 +959,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="Show TeamContext content and sync status")
     p_status.add_argument("--project-root", dest="project_root_local", help="Project root (default: current directory)")
     p_status.set_defaults(func=cmd_status)
+
+    p_agent = sub.add_parser("agent", help="Agent-oriented intent execution")
+    agent_sub = p_agent.add_subparsers(dest="agent_command", required=True)
+    p_agent_run = agent_sub.add_parser("run", help="Execute mapped command for an intent")
+    p_agent_run.add_argument("--project-root", dest="project_root_local", help="Project root (default: current directory)")
+    p_agent_run.add_argument("intent", nargs="+", help='Intent text, e.g. "sync latest context"')
+    p_agent_run.set_defaults(func=cmd_agent_run)
 
     p_vendor = sub.add_parser("vendor", help="Vendor management commands")
     vendor_sub = p_vendor.add_subparsers(dest="vendor_command", required=True)
