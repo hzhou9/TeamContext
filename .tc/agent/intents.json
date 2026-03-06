@@ -5,11 +5,34 @@
     {
       "command": [
         "tc",
+        "agent",
         "save",
-        "--auto-bootstrap-if-empty"
+        "--changes-source",
+        "uncommitted",
+        "--auto-bootstrap-if-empty",
+        "--intent",
+        "<intent-delta>",
+        "--decisions",
+        "<decisions>"
       ],
       "execute_immediately": true,
       "intent": "save recent context to tc"
+    },
+    {
+      "command": [
+        "tc",
+        "agent",
+        "save",
+        "--changes-source",
+        "uncommitted",
+        "--auto-bootstrap-if-empty",
+        "--intent",
+        "<intent-delta>",
+        "--decisions",
+        "<decisions>"
+      ],
+      "execute_immediately": true,
+      "intent": "save context"
     },
     {
       "command": [
@@ -19,6 +42,15 @@
       ],
       "execute_immediately": true,
       "intent": "sync latest context"
+    },
+    {
+      "command": [
+        "tc",
+        "sync",
+        "--json"
+      ],
+      "execute_immediately": true,
+      "intent": "sync context"
     }
   ],
   "version": 1
